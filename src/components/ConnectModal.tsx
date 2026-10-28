@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, ShieldCheck, Mail, Key, ExternalLink, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { X, ShieldCheck, Mail, Key, ExternalLink, AlertCircle, CheckCircle2, Copy, Check } from 'lucide-react';
 import type { ProviderType } from '../types/provider.ts';
 import { googleSignIn } from '../services/firebaseAuth.ts';
+import firebaseConfig from '../../firebase-applet-config.json';
 
 interface ConnectModalProps {
   isOpen: boolean;
@@ -22,6 +23,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   // Microsoft state
   const [msToken, setMsToken] = useState('');
@@ -36,6 +38,16 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 
   if (!isOpen) return null;
 
+  const currentHostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const firebaseSettingsUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
+
+  const handleCopyHostname = () => {
+    if (!currentHostname) return;
+    navigator.clipboard.writeText(currentHostname);
+    setCopiedDomain(true);
+    setTimeout(() => setCopiedDomain(false), 2500);
+  };
+
   const handleGoogleConnect = async () => {
     setLoading(true);
     setError(null);
@@ -49,8 +61,13 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
         onClose();
       }
     } catch (err: unknown) {
-      const error = err as { message?: string };
-      setError(error.message || 'Failed to authenticate with Google.');
+      const error = err as { code?: string; message?: string };
+      console.error('Google Sign-in failed:', error);
+      if (error.code === 'auth/unauthorized-domain' || (error.message && error.message.includes('unauthorized-domain'))) {
+        setError(`auth/unauthorized-domain: This hosting domain (${currentHostname || 'your Netlify domain'}) has not been authorized in Firebase Authentication.`);
+      } else {
+        setError(error.message || 'Failed to authenticate with Google.');
+      }
     } finally {
       setLoading(false);
     }
@@ -80,6 +97,8 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
     });
     onClose();
   };
+
+  const isUnauthorizedDomain = error && error.includes('unauthorized-domain');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
@@ -112,9 +131,64 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
         {/* Content */}
         <div className="p-6">
           {error && (
-            <div className="mb-4 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+            <div className="mb-4 space-y-3">
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="break-words">{error}</span>
+              </div>
+
+              {/* Special Guided Resolution for auth/unauthorized-domain */}
+              {isUnauthorizedDomain && (
+                <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-900 dark:text-amber-200 space-y-3">
+                  <div className="flex items-center gap-2 font-semibold text-amber-950 dark:text-amber-100">
+                    <span>How to fix in 1 minute:</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+                    Firebase blocks OAuth popups on any domain not explicitly added to its authorized domains list.
+                  </p>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-semibold text-amber-950 dark:text-amber-100">
+                      Step 1: Copy your current domain
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 px-2.5 py-1.5 rounded-lg bg-amber-100/70 dark:bg-amber-900/50 font-mono text-xs select-all text-amber-950 dark:text-amber-100">
+                        {currentHostname || 'your-site.netlify.app'}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={handleCopyHostname}
+                        className="px-3 py-1.5 rounded-lg bg-amber-200 hover:bg-amber-300 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-950 dark:text-amber-100 text-xs font-medium flex items-center gap-1 transition"
+                      >
+                        {copiedDomain ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedDomain ? 'Copied!' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 text-[11px]">
+                    <span className="font-semibold block text-amber-950 dark:text-amber-100">
+                      Step 2: Add it to Firebase Authorized Domains
+                    </span>
+                    <ol className="list-decimal list-inside space-y-1 text-amber-800 dark:text-amber-300">
+                      <li>Open Firebase Authentication Settings using the link below.</li>
+                      <li>Scroll down to the <strong>Authorized domains</strong> section.</li>
+                      <li>Click <strong>Add domain</strong> and paste your domain (e.g. <code>{currentHostname || 'your-site.netlify.app'}</code>).</li>
+                      <li>Click <strong>Save</strong> and try signing in again!</li>
+                    </ol>
+                  </div>
+
+                  <a
+                    href={firebaseSettingsUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs shadow-xs transition"
+                  >
+                    <span>Open Firebase Authorized Domains Console</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
@@ -136,7 +210,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                   type="button"
                   onClick={handleGoogleConnect}
                   disabled={loading}
-                  className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xs bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 transition text-sm font-medium text-slate-700 dark:text-slate-200 disabled:opacity-60"
+                  className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xs bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 transition text-sm font-medium text-slate-700 dark:text-slate-200 disabled:opacity-60 cursor-pointer"
                 >
                   <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48">
                     <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -188,11 +262,10 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    // Populate test token for demo convenience
                     setMsEmail('demo.user@outlook.com');
                     setMsToken('mock_ms_graph_token_demo_mode');
                   }}
-                  className="text-xs text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1"
+                  className="text-xs text-sky-600 dark:text-sky-400 hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <Key className="w-3.5 h-3.5" />
                   Fill Demo Microsoft Token
@@ -201,7 +274,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 
               <button
                 type="submit"
-                className="w-full py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm transition shadow-sm"
+                className="w-full py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-medium text-sm transition shadow-sm cursor-pointer"
               >
                 Connect Microsoft Inbox
               </button>
@@ -261,7 +334,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowAdvancedImap(!showAdvancedImap)}
-                  className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 font-medium"
+                  className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 font-medium cursor-pointer"
                 >
                   {showAdvancedImap ? '− Hide IMAP Server Settings' : '+ Custom IMAP Server Settings'}
                 </button>
@@ -292,7 +365,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
 
               <button
                 type="submit"
-                className="w-full py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-medium text-sm transition shadow-sm"
+                className="w-full py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-medium text-sm transition shadow-sm cursor-pointer"
               >
                 Connect Yahoo Mailbox
               </button>
