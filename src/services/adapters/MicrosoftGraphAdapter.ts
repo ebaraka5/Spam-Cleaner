@@ -8,7 +8,7 @@ export class MicrosoftGraphAdapter implements EmailProviderAdapter {
     this.accessToken = accessToken;
   }
 
-  async scanBatch(cursor?: string): Promise<BatchScanResult> {
+  async scanBatch(cursor?: string, _queryFilter?: string): Promise<BatchScanResult> {
     // If it's the test/demo token, return mock outlook inbox
     if (this.accessToken === 'mock_ms_graph_token_demo_mode') {
       const mockResult: BatchScanResult = {

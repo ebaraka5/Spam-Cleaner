@@ -21,7 +21,8 @@ import type {
   DomainGroup,
   EmailAccount,
   EmailProviderAdapter,
-  BatchScanResult
+  BatchScanResult,
+  MessagePreview
 } from './types/provider.ts';
 import { GmailAdapter } from './services/adapters/GmailAdapter.ts';
 import { MicrosoftGraphAdapter } from './services/adapters/MicrosoftGraphAdapter.ts';
@@ -80,6 +81,15 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [isAutoScanning, setIsAutoScanning] = useState(false);
   const autoScanRef = useRef(false);
+
+  // Scan folder scope filter and previews
+  const [queryFilter, setQueryFilter] = useState<string>('in:inbox');
+  const [recentPreviews, setRecentPreviews] = useState<Record<ProviderType, MessagePreview[]>>({
+    google: [],
+    microsoft: [],
+    yahoo: [],
+    demo: [],
+  });
 
   // Modals state
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
@@ -162,7 +172,7 @@ export default function App() {
 
   // Scan single batch (up to 500 emails)
   const scanBatch = useCallback(
-    async (cursorOverride?: string | null): Promise<BatchScanResult | null> => {
+    async (cursorOverride?: string | null, filterOverride?: string): Promise<BatchScanResult | null> => {
       if (!activeAccount.isConnected) {
         setIsConnectModalOpen(true);
         return null;
@@ -172,7 +182,16 @@ export default function App() {
       try {
         const adapter = getAdapter();
         const cursorToUse = cursorOverride !== undefined ? cursorOverride : activeState.cursor;
-        const result = await adapter.scanBatch(cursorToUse || undefined);
+        const filterToUse = filterOverride !== undefined ? filterOverride : queryFilter;
+        const result = await adapter.scanBatch(cursorToUse || undefined, filterToUse);
+
+        // Store previews
+        if (result.recentPreviews && result.recentPreviews.length > 0) {
+          setRecentPreviews((prev) => ({
+            ...prev,
+            [currentProvider]: result.recentPreviews || [],
+          }));
+        }
 
         // Aggregate domains
         setStates((prev) => {
@@ -223,7 +242,7 @@ export default function App() {
         setIsScanning(false);
       }
     },
-    [activeAccount.isConnected, activeState.cursor, currentProvider, getAdapter]
+    [activeAccount.isConnected, activeState.cursor, currentProvider, getAdapter, queryFilter]
   );
 
   // Auto scan continuously in 500-batch increments until done or cancelled
@@ -401,6 +420,26 @@ export default function App() {
     setSelectedDomainNames(new Set());
   };
 
+  const handleQueryFilterChange = async (newFilter: string) => {
+    setQueryFilter(newFilter);
+    setStates((prev) => ({
+      ...prev,
+      [currentProvider]: {
+        ...DEFAULT_PROVIDER_STATE,
+        protectedDomains: prev[currentProvider].protectedDomains,
+      },
+    }));
+    setSelectedDomainNames(new Set());
+    setRecentPreviews((prev) => ({
+      ...prev,
+      [currentProvider]: [],
+    }));
+    showToast('Scope Updated', `Switched scan scope to "${newFilter}". Scanning...`, 'info');
+    setTimeout(() => {
+      scanBatch(null, newFilter);
+    }, 100);
+  };
+
   // Connect callbacks
   const handleConnectGoogle = (token: string, user: { email: string; name?: string }) => {
     setAccounts((prev) => ({
@@ -415,7 +454,10 @@ export default function App() {
       },
     }));
     setCurrentProvider('google');
-    showToast('Google Connected', `Signed in as ${user.email}. Ready to scan.`, 'success');
+    showToast('Google Connected', `Signed in as ${user.email}. Scanning your inbox...`, 'success');
+    setTimeout(() => {
+      scanBatch(null, queryFilter);
+    }, 150);
   };
 
   const handleConnectMicrosoft = (token: string, email: string) => {
@@ -554,6 +596,9 @@ export default function App() {
           selectedDomainsCount={selectedDomainNames.size}
           selectedEmailsCount={selectedEmailsCount}
           onTriggerBulkDelete={handleTriggerBulkDelete}
+          queryFilter={queryFilter}
+          onQueryFilterChange={handleQueryFilterChange}
+          recentPreviews={recentPreviews[currentProvider] || []}
         />
 
         {/* Domain Aggregation Table */}

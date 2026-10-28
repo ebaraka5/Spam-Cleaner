@@ -19,10 +19,11 @@ export interface BatchScanResult {
   nextCursor: string | null; // pageToken (Gmail), @odata.nextLink (Graph), or UID cursor (Yahoo)
   totalScanned: number;
   batchNumber?: number;
+  recentPreviews?: MessagePreview[];
 }
 
 export interface EmailProviderAdapter {
-  scanBatch(cursor?: string): Promise<BatchScanResult>;
+  scanBatch(cursor?: string, queryFilter?: string): Promise<BatchScanResult>;
   deleteBatch(messageIds: string[], permanent?: boolean): Promise<{ success: boolean; count: number }>;
   getAccountInfo?(): Promise<{ email: string; name?: string; provider: ProviderType }>;
 }

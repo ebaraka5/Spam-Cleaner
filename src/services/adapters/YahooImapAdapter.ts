@@ -14,7 +14,7 @@ export class YahooImapAdapter implements EmailProviderAdapter {
     this.creds = creds;
   }
 
-  async scanBatch(cursor?: string): Promise<BatchScanResult> {
+  async scanBatch(cursor?: string, _queryFilter?: string): Promise<BatchScanResult> {
     try {
       const res = await fetch('/api/imap/scan', {
         method: 'POST',

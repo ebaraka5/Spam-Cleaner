@@ -47,13 +47,15 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="flex items-center gap-3">
             {currentAccount.isConnected ? (
               <div className="flex items-center gap-2">
-                <div className="hidden sm:flex flex-col text-right">
-                  <span className="text-xs font-semibold text-slate-900 dark:text-white truncate max-w-[180px]">
-                    {currentAccount.name || currentAccount.email}
-                  </span>
-                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center justify-end gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Connected
+                <div className="flex flex-col text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white truncate max-w-[220px]">
+                      {currentAccount.email}
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    {currentAccount.name ? `${currentAccount.name} • Active` : 'Connected & Active'}
                   </span>
                 </div>
                 {currentProvider !== 'demo' && (

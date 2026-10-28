@@ -254,7 +254,7 @@ function generateClientDemoInbox(totalCount: number = 2500): DemoEmail[] {
 let clientDemoStore: DemoEmail[] = generateClientDemoInbox(2500);
 
 export class DemoAdapter implements EmailProviderAdapter {
-  async scanBatch(cursor?: string): Promise<BatchScanResult> {
+  async scanBatch(cursor?: string, _queryFilter?: string): Promise<BatchScanResult> {
     // Client-side execution (guaranteed to work on Netlify, localhost, anywhere without a backend)
     const startIndex = cursor ? parseInt(cursor, 10) || 0 : 0;
     const batchSize = 500;
@@ -262,6 +262,13 @@ export class DemoAdapter implements EmailProviderAdapter {
     const currentBatch = clientDemoStore.slice(startIndex, endIndex);
 
     const domains: Record<string, DomainGroup> = {};
+    const recentPreviews = currentBatch.slice(0, 10).map((m) => ({
+      id: m.id,
+      sender: m.sender,
+      subject: m.subject,
+      date: m.date,
+      snippet: `Sample preview for ${m.subject}`,
+    }));
 
     for (const email of currentBatch) {
       const { domain, email: parsedEmail } = extractDomain(email.sender);
@@ -304,6 +311,7 @@ export class DemoAdapter implements EmailProviderAdapter {
       nextCursor,
       totalScanned: currentBatch.length,
       batchNumber,
+      recentPreviews,
     };
   }
 

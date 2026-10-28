@@ -1,5 +1,23 @@
-import type { EmailProviderAdapter, BatchScanResult, DomainGroup } from '../../types/provider.ts';
+import type { EmailProviderAdapter, BatchScanResult, DomainGroup, MessagePreview } from '../../types/provider.ts';
 import { extractDomain, categorizeDomain } from '../../utils/domainParser.ts';
+
+async function fetchWithRetry(url: string, options: RequestInit, retries = 2): Promise<Response | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 || res.status >= 500) {
+        // Rate limit backoff
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        continue;
+      }
+      return res;
+    } catch {
+      if (attempt === retries) return null;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  return null;
+}
 
 export class GmailAdapter implements EmailProviderAdapter {
   private accessToken: string;
@@ -8,24 +26,23 @@ export class GmailAdapter implements EmailProviderAdapter {
     this.accessToken = accessToken;
   }
 
-  async scanBatch(cursor?: string): Promise<BatchScanResult> {
+  async scanBatch(cursor?: string, queryFilter: string = 'in:inbox'): Promise<BatchScanResult> {
     const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
     listUrl.searchParams.set('maxResults', '500');
-    listUrl.searchParams.set('q', 'in:inbox');
+    listUrl.searchParams.set('q', queryFilter);
     if (cursor) {
       listUrl.searchParams.set('pageToken', cursor);
     }
 
-    const listRes = await fetch(listUrl.toString(), {
+    const listRes = await fetchWithRetry(listUrl.toString(), {
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
       },
     });
 
-    if (!listRes.ok) {
-      const err = await listRes.json().catch(() => ({ error: { message: `HTTP ${listRes.status}` } }));
-      const msg = err.error?.message || `Gmail API returned ${listRes.status}`;
-      throw new Error(`Gmail API error: ${msg}`);
+    if (!listRes || !listRes.ok) {
+      const status = listRes ? listRes.status : 'Network error';
+      throw new Error(`Gmail API messages list failed: ${status}`);
     }
 
     const listData = await listRes.json();
@@ -37,38 +54,36 @@ export class GmailAdapter implements EmailProviderAdapter {
         domains: {},
         nextCursor: null,
         totalScanned: 0,
+        recentPreviews: [],
       };
     }
 
     const domains: Record<string, DomainGroup> = {};
+    const recentPreviews: MessagePreview[] = [];
 
-    // Fetch metadata for messages in concurrent chunks
-    const CHUNK_SIZE = 30;
+    // Fetch metadata in controlled chunks of 15 with 50ms pause to stay within Gmail 250 units/sec quota
+    const CHUNK_SIZE = 15;
     for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
       const slice = messages.slice(i, i + CHUNK_SIZE);
       const results = await Promise.all(
         slice.map(async (msg) => {
-          try {
-            const metaUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-            const metaRes = await fetch(metaUrl, {
-              headers: { Authorization: `Bearer ${this.accessToken}` },
-            });
-            if (!metaRes.ok) return null;
-            return await metaRes.json();
-          } catch {
-            return null;
-          }
+          const metaUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata`;
+          const metaRes = await fetchWithRetry(metaUrl, {
+            headers: { Authorization: `Bearer ${this.accessToken}` },
+          });
+          if (!metaRes || !metaRes.ok) return null;
+          return await metaRes.json().catch(() => null);
         })
       );
 
       for (const item of results) {
         if (!item || !item.id) continue;
-        const headers = item.payload?.headers || [];
-        const fromHeader = headers.find((h: any) => h.name?.toLowerCase() === 'from')?.value || '';
-        const subjectHeader = headers.find((h: any) => h.name?.toLowerCase() === 'subject')?.value || '(No Subject)';
-        const dateHeader = headers.find((h: any) => h.name?.toLowerCase() === 'date')?.value || new Date().toISOString();
+        const headers: Array<{ name: string; value: string }> = item.payload?.headers || [];
+        const fromHeader = headers.find((h) => h.name?.toLowerCase() === 'from')?.value || '';
+        const subjectHeader = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value || '(No Subject)';
+        const dateHeader = headers.find((h) => h.name?.toLowerCase() === 'date')?.value || new Date().toISOString();
 
-        const { domain, email } = extractDomain(fromHeader);
+        const { domain, email, name: senderName } = extractDomain(fromHeader);
         const catInfo = categorizeDomain(domain);
 
         if (!domains[domain]) {
@@ -94,6 +109,22 @@ export class GmailAdapter implements EmailProviderAdapter {
         if (group.sampleSenders && group.sampleSenders.length < 3 && !group.sampleSenders.includes(email)) {
           group.sampleSenders.push(email);
         }
+
+        // Store up to 10 recent previews for user visibility
+        if (recentPreviews.length < 10) {
+          recentPreviews.push({
+            id: item.id,
+            sender: senderName ? `${senderName} (${email})` : email,
+            subject: subjectHeader,
+            date: dateHeader,
+            snippet: item.snippet || '',
+          });
+        }
+      }
+
+      // Small pause between chunks to respect rate limits
+      if (i + CHUNK_SIZE < messages.length) {
+        await new Promise((r) => setTimeout(r, 45));
       }
     }
 
@@ -101,6 +132,7 @@ export class GmailAdapter implements EmailProviderAdapter {
       domains,
       nextCursor: nextPageToken,
       totalScanned: messages.length,
+      recentPreviews,
     };
   }
 
