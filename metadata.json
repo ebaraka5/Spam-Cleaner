@@ -1,0 +1,6 @@
+{
+  "name": "Email Cleaner",
+  "description": "Multi-provider inbox cleaner for Gmail, Outlook, and Yahoo that scans emails in 500-batch increments, aggregates by sender domain, and enables fast domain bulk-deletion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
