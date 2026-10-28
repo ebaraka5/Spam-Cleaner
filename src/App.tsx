@@ -60,8 +60,22 @@ const DEFAULT_PROVIDER_STATE: ProviderState = {
   protectedDomains: new Set(['chase.com', 'service.paypal.com', 'receipts.apple.com']),
 };
 
+const getInitialProvider = (): ProviderType => {
+  try {
+    const saved = sessionStorage.getItem('ec_active_provider');
+    if (saved && (saved === 'google' || saved === 'microsoft' || saved === 'yahoo' || saved === 'demo')) {
+      return saved as ProviderType;
+    }
+    const token = sessionStorage.getItem('ec_google_access_token');
+    if (token) return 'google';
+  } catch {
+    // ignore
+  }
+  return 'demo';
+};
+
 export default function App() {
-  const [currentProvider, setCurrentProvider] = useState<ProviderType>('demo');
+  const [currentProvider, setCurrentProvider] = useState<ProviderType>(getInitialProvider);
   const [accounts, setAccounts] = useState<Record<ProviderType, EmailAccount>>({
     google: { id: 'google', provider: 'google', email: 'Not Connected', isConnected: false },
     microsoft: { id: 'microsoft', provider: 'microsoft', email: 'Not Connected', isConnected: false },
@@ -99,66 +113,49 @@ export default function App() {
   const [inspectDomain, setInspectDomain] = useState<{ domain: string; group: DomainGroup } | null>(null);
   const [toastMessage, setToastMessage] = useState<{ title: string; subtitle?: string; type: 'success' | 'error' | 'info' } | null>(null);
 
+  // Synchronized refs to completely eliminate any React stale closure bugs during async scans
+  const currentProviderRef = useRef<ProviderType>(currentProvider);
+  currentProviderRef.current = currentProvider;
+
+  const accountsRef = useRef<Record<ProviderType, EmailAccount>>(accounts);
+  accountsRef.current = accounts;
+
+  const statesRef = useRef<Record<ProviderType, ProviderState>>(states);
+  statesRef.current = states;
+
+  const queryFilterRef = useRef<string>(queryFilter);
+  queryFilterRef.current = queryFilter;
+
+  const isScanningRef = useRef<boolean>(isScanning);
+  isScanningRef.current = isScanning;
+
   // Active state shortcuts
   const activeState = states[currentProvider];
   const activeAccount = accounts[currentProvider];
 
-  // Initialize Firebase Auth Listener for Google
-  useEffect(() => {
-    initAuth(
-      (user, token) => {
-        setAccounts((prev) => ({
-          ...prev,
-          google: {
-            id: 'google',
-            provider: 'google',
-            email: user.email || 'Google User',
-            name: user.displayName || undefined,
-            isConnected: true,
-            accessToken: token,
-          },
-        }));
-        setCurrentProvider('google');
-        showToast('Google Connected', `Signed in as ${user.email || 'Google User'}. Ready to scan.`, 'success');
-      },
-      () => {
-        setAccounts((prev) => ({
-          ...prev,
-          google: {
-            id: 'google',
-            provider: 'google',
-            email: 'Not Connected',
-            isConnected: false,
-            accessToken: undefined,
-          },
-        }));
-      }
-    );
-  }, []);
-
   // Show toast notification
-  const showToast = (title: string, subtitle?: string, type: 'success' | 'error' | 'info' = 'success') => {
+  const showToast = useCallback((title: string, subtitle?: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ title, subtitle, type });
     setTimeout(() => {
       setToastMessage(null);
     }, 4500);
-  };
+  }, []);
 
-  // Factory to instantiate the correct EmailProviderAdapter
-  const getAdapter = useCallback((): EmailProviderAdapter => {
-    switch (currentProvider) {
+  // Factory to instantiate the correct EmailProviderAdapter given explicit provider & token
+  const getAdapterFor = useCallback((provider: ProviderType, tokenOverride?: string): EmailProviderAdapter => {
+    switch (provider) {
       case 'google': {
-        const token = accounts.google.accessToken;
+        const token = tokenOverride || accountsRef.current.google.accessToken;
         if (!token) throw new Error('Gmail account not connected. Please sign in first.');
         return new GmailAdapter(token);
       }
       case 'microsoft': {
-        const token = accounts.microsoft.accessToken;
+        const token = tokenOverride || accountsRef.current.microsoft.accessToken;
         if (!token) throw new Error('Microsoft account not connected. Please provide an access token.');
         return new MicrosoftGraphAdapter(token);
       }
       case 'yahoo': {
-        const creds = accounts.yahoo.imapConfig;
+        const creds = accountsRef.current.yahoo.imapConfig;
         if (!creds || !creds.user || !creds.pass) {
           throw new Error('Yahoo account not connected. Please provide email and App Password.');
         }
@@ -168,34 +165,45 @@ export default function App() {
       default:
         return new DemoAdapter();
     }
-  }, [currentProvider, accounts]);
+  }, []);
 
-  // Scan single batch (up to 500 emails)
+  // Scan single batch (up to 500 emails) with explicit provider & token overrides
   const scanBatch = useCallback(
-    async (cursorOverride?: string | null, filterOverride?: string): Promise<BatchScanResult | null> => {
-      if (!activeAccount.isConnected) {
+    async (
+      cursorOverride?: string | null,
+      filterOverride?: string,
+      providerOverride?: ProviderType,
+      tokenOverride?: string
+    ): Promise<BatchScanResult | null> => {
+      const targetProvider = providerOverride || currentProviderRef.current;
+      const targetAccount = accountsRef.current[targetProvider];
+      const targetToken = tokenOverride || targetAccount?.accessToken;
+
+      if (!targetAccount.isConnected && !tokenOverride && targetProvider !== 'demo') {
         setIsConnectModalOpen(true);
         return null;
       }
 
       setIsScanning(true);
+      isScanningRef.current = true;
       try {
-        const adapter = getAdapter();
-        const cursorToUse = cursorOverride !== undefined ? cursorOverride : activeState.cursor;
-        const filterToUse = filterOverride !== undefined ? filterOverride : queryFilter;
+        const adapter = getAdapterFor(targetProvider, targetToken);
+        const currentState = statesRef.current[targetProvider];
+        const cursorToUse = cursorOverride !== undefined ? cursorOverride : currentState.cursor;
+        const filterToUse = filterOverride !== undefined ? filterOverride : queryFilterRef.current;
         const result = await adapter.scanBatch(cursorToUse || undefined, filterToUse);
 
         // Store previews
         if (result.recentPreviews && result.recentPreviews.length > 0) {
           setRecentPreviews((prev) => ({
             ...prev,
-            [currentProvider]: result.recentPreviews || [],
+            [targetProvider]: result.recentPreviews || [],
           }));
         }
 
-        // Aggregate domains
+        // Aggregate domains into targetProvider state
         setStates((prev) => {
-          const current = prev[currentProvider];
+          const current = prev[targetProvider];
           const updatedDomains = { ...current.domains };
 
           for (const [domain, newGroup] of Object.entries(result.domains)) {
@@ -218,16 +226,23 @@ export default function App() {
             }
           }
 
+          const nextState: ProviderState = {
+            ...current,
+            domains: updatedDomains,
+            cursor: result.nextCursor,
+            totalScanned: current.totalScanned + result.totalScanned,
+            batchNumber: current.batchNumber + 1,
+            hasMore: result.nextCursor !== null && result.totalScanned > 0,
+          };
+
+          statesRef.current = {
+            ...statesRef.current,
+            [targetProvider]: nextState,
+          };
+
           return {
             ...prev,
-            [currentProvider]: {
-              ...current,
-              domains: updatedDomains,
-              cursor: result.nextCursor,
-              totalScanned: current.totalScanned + result.totalScanned,
-              batchNumber: current.batchNumber + 1,
-              hasMore: result.nextCursor !== null && result.totalScanned > 0,
-            },
+            [targetProvider]: nextState,
           };
         });
 
@@ -240,10 +255,59 @@ export default function App() {
         return null;
       } finally {
         setIsScanning(false);
+        isScanningRef.current = false;
       }
     },
-    [activeAccount.isConnected, activeState.cursor, currentProvider, getAdapter, queryFilter]
+    [getAdapterFor, showToast]
   );
+
+  // Initialize Firebase Auth Listener for Google
+  useEffect(() => {
+    initAuth(
+      (user, token) => {
+        const updatedGoogle: EmailAccount = {
+          id: 'google',
+          provider: 'google',
+          email: user.email || 'Google User',
+          name: user.displayName || undefined,
+          isConnected: true,
+          accessToken: token,
+        };
+
+        setAccounts((prev) => ({
+          ...prev,
+          google: updatedGoogle,
+        }));
+        accountsRef.current.google = updatedGoogle;
+
+        try {
+          sessionStorage.setItem('ec_active_provider', 'google');
+        } catch {}
+
+        setCurrentProvider('google');
+        currentProviderRef.current = 'google';
+
+        showToast('Google Connected', `Signed in as ${user.email || 'Google User'}.`, 'success');
+
+        // Automatically scan Google messages if not scanned yet in this session
+        if (statesRef.current.google.totalScanned === 0 && !isScanningRef.current) {
+          scanBatch(null, queryFilterRef.current, 'google', token);
+        }
+      },
+      () => {
+        setAccounts((prev) => ({
+          ...prev,
+          google: {
+            id: 'google',
+            provider: 'google',
+            email: 'Not Connected',
+            isConnected: false,
+            accessToken: undefined,
+          },
+        }));
+      }
+    );
+  }, [scanBatch, showToast]);
 
   // Auto scan continuously in 500-batch increments until done or cancelled
   const handleToggleAutoScan = async () => {
@@ -253,7 +317,7 @@ export default function App() {
       return;
     }
 
-    if (!activeAccount.isConnected) {
+    if (!activeAccount.isConnected && currentProvider !== 'demo') {
       setIsConnectModalOpen(true);
       return;
     }
@@ -261,9 +325,9 @@ export default function App() {
     autoScanRef.current = true;
     setIsAutoScanning(true);
 
-    let nextCur: string | null = activeState.cursor;
+    let nextCur: string | null = statesRef.current[currentProvider].cursor;
     while (autoScanRef.current) {
-      const res = await scanBatch(nextCur);
+      const res = await scanBatch(nextCur, queryFilterRef.current, currentProvider);
       if (!res || !res.nextCursor || res.totalScanned === 0) {
         break;
       }
@@ -303,7 +367,7 @@ export default function App() {
   const executePurge = async (permanent: boolean) => {
     if (domainsToPurge.length === 0) return;
 
-    const adapter = getAdapter();
+    const adapter = getAdapterFor(currentProvider);
     const allMessageIds = domainsToPurge.flatMap((d) => d.group.messageIds);
     const domainNames = new Set(domainsToPurge.map((d) => d.domain));
 
@@ -321,14 +385,21 @@ export default function App() {
           delete nextDomains[name];
         }
 
+        const nextState: ProviderState = {
+          ...current,
+          domains: nextDomains,
+          totalCleaned: current.totalCleaned + result.count,
+          reclaimedStorageMb: current.reclaimedStorageMb + reclaimedMb,
+        };
+
+        statesRef.current = {
+          ...statesRef.current,
+          [currentProvider]: nextState,
+        };
+
         return {
           ...prev,
-          [currentProvider]: {
-            ...current,
-            domains: nextDomains,
-            totalCleaned: current.totalCleaned + result.count,
-            reclaimedStorageMb: current.reclaimedStorageMb + reclaimedMb,
-          },
+          [currentProvider]: nextState,
         };
       });
 
@@ -388,12 +459,19 @@ export default function App() {
         showToast('Domain Shielded', `${domain} is protected from accidental deletion.`, 'info');
       }
 
+      const nextState: ProviderState = {
+        ...current,
+        protectedDomains: nextProtected,
+      };
+
+      statesRef.current = {
+        ...statesRef.current,
+        [currentProvider]: nextState,
+      };
+
       return {
         ...prev,
-        [currentProvider]: {
-          ...current,
-          protectedDomains: nextProtected,
-        },
+        [currentProvider]: nextState,
       };
     });
   };
@@ -422,89 +500,145 @@ export default function App() {
 
   const handleQueryFilterChange = async (newFilter: string) => {
     setQueryFilter(newFilter);
-    setStates((prev) => ({
-      ...prev,
-      [currentProvider]: {
-        ...DEFAULT_PROVIDER_STATE,
-        protectedDomains: prev[currentProvider].protectedDomains,
-      },
-    }));
+    queryFilterRef.current = newFilter;
+    setStates((prev) => {
+      const next = {
+        ...prev,
+        [currentProvider]: {
+          ...DEFAULT_PROVIDER_STATE,
+          protectedDomains: prev[currentProvider].protectedDomains,
+        },
+      };
+      statesRef.current = next;
+      return next;
+    });
     setSelectedDomainNames(new Set());
     setRecentPreviews((prev) => ({
       ...prev,
       [currentProvider]: [],
     }));
     showToast('Scope Updated', `Switched scan scope to "${newFilter}". Scanning...`, 'info');
-    setTimeout(() => {
-      scanBatch(null, newFilter);
-    }, 100);
+    scanBatch(null, newFilter, currentProvider);
   };
 
   // Connect callbacks
   const handleConnectGoogle = (token: string, user: { email: string; name?: string }) => {
+    try {
+      sessionStorage.setItem('ec_active_provider', 'google');
+    } catch {
+      // ignore
+    }
+
+    const updatedGoogle: EmailAccount = {
+      id: 'google',
+      provider: 'google',
+      email: user.email,
+      name: user.name,
+      isConnected: true,
+      accessToken: token,
+    };
+
     setAccounts((prev) => ({
       ...prev,
-      google: {
-        id: 'google',
-        provider: 'google',
-        email: user.email,
-        name: user.name,
-        isConnected: true,
-        accessToken: token,
-      },
+      google: updatedGoogle,
     }));
+    accountsRef.current.google = updatedGoogle;
+
     setCurrentProvider('google');
-    showToast('Google Connected', `Signed in as ${user.email}. Scanning your inbox...`, 'success');
-    setTimeout(() => {
-      scanBatch(null, queryFilter);
-    }, 150);
+    currentProviderRef.current = 'google';
+    setSelectedDomainNames(new Set());
+
+    showToast('Google Connected', `Signed in as ${user.email}. Scanning your real inbox...`, 'success');
+    scanBatch(null, queryFilterRef.current, 'google', token);
   };
 
   const handleConnectMicrosoft = (token: string, email: string) => {
+    try {
+      sessionStorage.setItem('ec_active_provider', 'microsoft');
+    } catch {
+      // ignore
+    }
+
+    const updatedMs: EmailAccount = {
+      id: 'microsoft',
+      provider: 'microsoft',
+      email,
+      isConnected: true,
+      accessToken: token,
+    };
+
     setAccounts((prev) => ({
       ...prev,
-      microsoft: {
-        id: 'microsoft',
-        provider: 'microsoft',
-        email,
-        isConnected: true,
-        accessToken: token,
-      },
+      microsoft: updatedMs,
     }));
+    accountsRef.current.microsoft = updatedMs;
+
     setCurrentProvider('microsoft');
-    showToast('Microsoft Connected', `Connected as ${email}.`, 'success');
+    currentProviderRef.current = 'microsoft';
+    setSelectedDomainNames(new Set());
+
+    showToast('Microsoft Connected', `Connected as ${email}. Scanning...`, 'success');
+    scanBatch(null, queryFilterRef.current, 'microsoft', token);
   };
 
   const handleConnectYahoo = (creds: { user: string; pass: string; host?: string; port?: number }) => {
+    try {
+      sessionStorage.setItem('ec_active_provider', 'yahoo');
+    } catch {
+      // ignore
+    }
+
+    const updatedYahoo: EmailAccount = {
+      id: 'yahoo',
+      provider: 'yahoo',
+      email: creds.user,
+      isConnected: true,
+      imapConfig: creds,
+    };
+
     setAccounts((prev) => ({
       ...prev,
-      yahoo: {
-        id: 'yahoo',
-        provider: 'yahoo',
-        email: creds.user,
-        isConnected: true,
-        imapConfig: creds,
-      },
+      yahoo: updatedYahoo,
     }));
+    accountsRef.current.yahoo = updatedYahoo;
+
     setCurrentProvider('yahoo');
-    showToast('Yahoo Mail Connected', `Authenticated IMAP for ${creds.user}.`, 'success');
+    currentProviderRef.current = 'yahoo';
+    setSelectedDomainNames(new Set());
+
+    showToast('Yahoo Mail Connected', `Authenticated IMAP for ${creds.user}. Scanning...`, 'success');
+    scanBatch(null, queryFilterRef.current, 'yahoo');
   };
 
   const handleDisconnectProvider = async (provider: ProviderType) => {
     if (provider === 'google') {
       await googleLogout();
     }
+    const disconnectedAccount: EmailAccount = {
+      id: provider,
+      provider,
+      email: 'Not Connected',
+      isConnected: false,
+      accessToken: undefined,
+      imapConfig: undefined,
+    };
+
     setAccounts((prev) => ({
       ...prev,
-      [provider]: {
-        id: provider,
-        provider,
-        email: 'Not Connected',
-        isConnected: false,
-        accessToken: undefined,
-        imapConfig: undefined,
-      },
+      [provider]: disconnectedAccount,
     }));
+    accountsRef.current[provider] = disconnectedAccount;
+
+    if (currentProvider === provider) {
+      try {
+        sessionStorage.setItem('ec_active_provider', 'demo');
+      } catch {
+        // ignore
+      }
+      setCurrentProvider('demo');
+      currentProviderRef.current = 'demo';
+    }
+
     showToast('Account Disconnected', `${provider} account unlinked.`, 'info');
   };
 
@@ -513,12 +647,17 @@ export default function App() {
     return acc + (activeState.domains[d]?.count || 0);
   }, 0);
 
-  // Initial trigger for Demo sandbox on first load so user immediately sees rich data
+  // Initial trigger for Demo sandbox on first load so user immediately sees rich data ONLY if not on google
   const hasLoadedInitialDemo = useRef(false);
   useEffect(() => {
+    const storedToken = typeof window !== 'undefined' ? sessionStorage.getItem('ec_google_access_token') : null;
+    const storedProvider = typeof window !== 'undefined' ? sessionStorage.getItem('ec_active_provider') : null;
+    if (storedToken || storedProvider === 'google') {
+      return;
+    }
     if (!hasLoadedInitialDemo.current && currentProvider === 'demo' && activeState.totalScanned === 0) {
       hasLoadedInitialDemo.current = true;
-      scanBatch();
+      scanBatch(null, queryFilterRef.current, 'demo');
     }
   }, [currentProvider, activeState.totalScanned, scanBatch]);
 
@@ -543,8 +682,21 @@ export default function App() {
       <Header
         currentProvider={currentProvider}
         onSelectProvider={(p) => {
+          try {
+            sessionStorage.setItem('ec_active_provider', p);
+          } catch {
+            // ignore
+          }
           setCurrentProvider(p);
+          currentProviderRef.current = p;
           setSelectedDomainNames(new Set());
+
+          // Automatically scan if switching to connected Google or Demo with 0 scanned emails
+          if (p === 'google' && accountsRef.current.google.isConnected && statesRef.current.google.totalScanned === 0 && !isScanningRef.current) {
+            scanBatch(null, queryFilterRef.current, 'google', accountsRef.current.google.accessToken);
+          } else if (p === 'demo' && statesRef.current.demo.totalScanned === 0 && !isScanningRef.current) {
+            scanBatch(null, queryFilterRef.current, 'demo');
+          }
         }}
         accounts={accounts}
         onOpenConnectModal={() => setIsConnectModalOpen(true)}
@@ -581,6 +733,8 @@ export default function App() {
         {/* Progress & Batch Scanning Engine */}
         <ScanProgressHeader
           provider={currentProvider}
+          accountEmail={activeAccount.email}
+          accountName={activeAccount.name}
           totalScanned={activeState.totalScanned}
           totalDomainsCount={Object.keys(activeState.domains).length}
           totalCleanedCount={activeState.totalCleaned}
@@ -589,7 +743,7 @@ export default function App() {
           batchNumber={activeState.batchNumber}
           isScanning={isScanning}
           isAutoScanning={isAutoScanning}
-          onScanNextBatch={() => scanBatch()}
+          onScanNextBatch={() => scanBatch(undefined, undefined, currentProvider)}
           onToggleAutoScan={handleToggleAutoScan}
           onResetScan={handleResetScan}
           hasMoreBatches={activeState.hasMore}

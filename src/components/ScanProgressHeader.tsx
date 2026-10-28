@@ -23,6 +23,8 @@ import type { ProviderType, MessagePreview } from '../types/provider.ts';
 
 interface ScanProgressHeaderProps {
   provider: ProviderType;
+  accountEmail?: string;
+  accountName?: string;
   totalScanned: number;
   totalDomainsCount: number;
   totalCleanedCount: number;
@@ -45,6 +47,8 @@ interface ScanProgressHeaderProps {
 
 export const ScanProgressHeader: React.FC<ScanProgressHeaderProps> = ({
   provider,
+  accountEmail,
+  accountName,
   totalScanned,
   totalDomainsCount,
   totalCleanedCount,
@@ -161,6 +165,18 @@ export const ScanProgressHeader: React.FC<ScanProgressHeaderProps> = ({
               <span className="px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold border border-indigo-400/30 flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-indigo-400" />
                 Incremental 500-Email Batch Analyzer
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-800/90 text-slate-200 text-xs font-medium border border-slate-700 flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${provider === 'demo' ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
+                <span>
+                  {provider === 'google'
+                    ? `Gmail: ${accountEmail || 'Connected'}`
+                    : provider === 'microsoft'
+                    ? `Outlook: ${accountEmail || 'Connected'}`
+                    : provider === 'yahoo'
+                    ? `Yahoo: ${accountEmail || 'Connected'}`
+                    : 'Sample Demo Inbox (Sandbox)'}
+                </span>
               </span>
               {hasMoreBatches && totalScanned > 0 && (
                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold border border-emerald-400/30">

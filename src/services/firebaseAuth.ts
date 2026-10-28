@@ -18,8 +18,30 @@ const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/gmail.modify');
 provider.setCustomParameters({ prompt: 'select_account' });
 
+const TOKEN_KEY = 'ec_google_access_token';
+
+const getStoredToken = (): string | null => {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const setStoredToken = (token: string | null) => {
+  try {
+    if (token) {
+      sessionStorage.setItem(TOKEN_KEY, token);
+    } else {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+};
+
 let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null = getStoredToken();
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -32,6 +54,7 @@ export const initAuth = (
         const credential = GoogleAuthProvider.credentialFromResult(result);
         if (credential?.accessToken) {
           cachedAccessToken = credential.accessToken;
+          setStoredToken(credential.accessToken);
           if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
         }
       }
@@ -42,14 +65,18 @@ export const initAuth = (
 
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      const token = cachedAccessToken || getStoredToken();
+      if (token) {
+        cachedAccessToken = token;
+        if (onAuthSuccess) onAuthSuccess(user, token);
       } else if (!isSigningIn) {
         cachedAccessToken = null;
+        setStoredToken(null);
         if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
+      setStoredToken(null);
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -65,6 +92,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    setStoredToken(cachedAccessToken);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error) {
     console.error('Google Sign In error:', error);
@@ -80,10 +108,11 @@ export const googleSignInRedirect = async (): Promise<void> => {
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  return cachedAccessToken || getStoredToken();
 };
 
 export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;
+  setStoredToken(null);
 };

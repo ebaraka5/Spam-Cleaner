@@ -42,6 +42,12 @@ export class GmailAdapter implements EmailProviderAdapter {
 
     if (!listRes || !listRes.ok) {
       const status = listRes ? listRes.status : 'Network error';
+      if (listRes?.status === 401) {
+        throw new Error('Google token expired or revoked. Please disconnect and reconnect your Google account.');
+      }
+      if (listRes?.status === 403) {
+        throw new Error('Gmail permission denied. Please ensure the Gmail Modify scope is granted.');
+      }
       throw new Error(`Gmail API messages list failed: ${status}`);
     }
 
@@ -61,14 +67,19 @@ export class GmailAdapter implements EmailProviderAdapter {
     const domains: Record<string, DomainGroup> = {};
     const recentPreviews: MessagePreview[] = [];
 
-    // Fetch metadata in controlled chunks of 15 with 50ms pause to stay within Gmail 250 units/sec quota
-    const CHUNK_SIZE = 15;
+    // Fetch metadata in controlled chunks of 20 with pause to stay well within Gmail 250 units/sec quota
+    const CHUNK_SIZE = 20;
     for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
       const slice = messages.slice(i, i + CHUNK_SIZE);
       const results = await Promise.all(
         slice.map(async (msg) => {
-          const metaUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata`;
-          const metaRes = await fetchWithRetry(metaUrl, {
+          const metaUrl = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`);
+          metaUrl.searchParams.set('format', 'metadata');
+          metaUrl.searchParams.append('metadataHeaders', 'From');
+          metaUrl.searchParams.append('metadataHeaders', 'Subject');
+          metaUrl.searchParams.append('metadataHeaders', 'Date');
+
+          const metaRes = await fetchWithRetry(metaUrl.toString(), {
             headers: { Authorization: `Bearer ${this.accessToken}` },
           });
           if (!metaRes || !metaRes.ok) return null;
