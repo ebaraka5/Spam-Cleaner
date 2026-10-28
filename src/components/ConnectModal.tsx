@@ -78,7 +78,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
       const errorObj = err as { code?: string; message?: string };
       console.error('Google Sign-in failed:', errorObj);
       if (errorObj.code === 'auth/unauthorized-domain' || (errorObj.message && errorObj.message.includes('unauthorized-domain'))) {
-        setError(`auth/unauthorized-domain: This hosting domain (${currentHostname || 'your Netlify domain'}) has not been authorized in Firebase Authentication.`);
+        setError(`auth/unauthorized-domain: This hosting domain (${currentHostname || 'your Render/Netlify domain'}) has not been authorized in Firebase Authentication.`);
       } else if (errorObj.code === 'auth/popup-closed-by-user' || (errorObj.message && errorObj.message.includes('popup-closed-by-user'))) {
         setError(`auth/popup-closed-by-user: The sign-in popup was automatically closed or blocked by your browser before authentication finished.`);
       } else {
@@ -211,7 +211,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                     </label>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 px-2.5 py-1.5 rounded-lg bg-amber-100/70 dark:bg-amber-900/50 font-mono text-xs select-all text-amber-950 dark:text-amber-100">
-                        {currentHostname || 'your-site.netlify.app'}
+                        {currentHostname || 'your-site.onrender.com'}
                       </code>
                       <button
                         type="button"
@@ -231,7 +231,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                     <ol className="list-decimal list-inside space-y-1 text-amber-800 dark:text-amber-300">
                       <li>Open Firebase Authentication Settings using the link below.</li>
                       <li>Scroll down to the <strong>Authorized domains</strong> section.</li>
-                      <li>Click <strong>Add domain</strong> and paste your domain (e.g. <code>{currentHostname || 'your-site.netlify.app'}</code>).</li>
+                      <li>Click <strong>Add domain</strong> and paste your domain (e.g. <code>{currentHostname || 'your-site.onrender.com'}</code>).</li>
                       <li>Click <strong>Save</strong> and try signing in again!</li>
                     </ol>
                   </div>
