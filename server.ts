@@ -369,6 +369,7 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
   }
 
   const cursor = (req.body.cursor as string) || undefined;
+  const queryFilter = (req.body.queryFilter as string) || 'in:inbox';
   const batchLimit = 500;
 
   try {
@@ -377,12 +378,12 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-    // List up to 500 messages from INBOX
+    // List up to 500 messages matching scope query
     const listResponse = await gmail.users.messages.list({
       userId: 'me',
       maxResults: batchLimit,
       pageToken: cursor,
-      q: 'in:inbox',
+      q: queryFilter,
     });
 
     const messages = listResponse.data.messages || [];
@@ -393,13 +394,15 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
         domains: {},
         nextCursor: null,
         totalScanned: 0,
+        recentPreviews: [],
       });
     }
 
     const domains: Record<string, DomainGroup> = {};
+    const recentPreviews: Array<{ id: string; sender: string; subject: string; date: string; snippet?: string }> = [];
 
     // Fetch metadata for messages in parallel batches to extract From header
-    const CHUNK_SIZE = 40;
+    const CHUNK_SIZE = 30;
     for (let i = 0; i < messages.length; i += CHUNK_SIZE) {
       const slice = messages.slice(i, i + CHUNK_SIZE);
       const details = await Promise.all(
@@ -425,7 +428,7 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
         const subjectHeader = headers.find((h) => h.name?.toLowerCase() === 'subject')?.value || '(No Subject)';
         const dateHeader = headers.find((h) => h.name?.toLowerCase() === 'date')?.value || new Date().toISOString();
 
-        const { domain, email } = extractDomain(fromHeader);
+        const { domain, email, name: senderName } = extractDomain(fromHeader);
         const catInfo = categorizeDomain(domain);
 
         if (!domains[domain]) {
@@ -451,6 +454,16 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
         if (group.sampleSenders && group.sampleSenders.length < 3 && !group.sampleSenders.includes(email)) {
           group.sampleSenders.push(email);
         }
+
+        if (recentPreviews.length < 10) {
+          recentPreviews.push({
+            id: item.id,
+            sender: senderName ? `${senderName} (${email})` : email,
+            subject: subjectHeader,
+            date: dateHeader,
+            snippet: item.snippet || '',
+          });
+        }
       }
     }
 
@@ -458,6 +471,7 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
       domains,
       nextCursor: nextPageToken,
       totalScanned: messages.length,
+      recentPreviews,
     };
 
     res.json(result);

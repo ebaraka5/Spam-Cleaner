@@ -28,7 +28,7 @@ import { GmailAdapter } from './services/adapters/GmailAdapter.ts';
 import { MicrosoftGraphAdapter } from './services/adapters/MicrosoftGraphAdapter.ts';
 import { YahooImapAdapter } from './services/adapters/YahooImapAdapter.ts';
 import { DemoAdapter } from './services/adapters/DemoAdapter.ts';
-import { initAuth, logout as googleLogout } from './services/firebaseAuth.ts';
+import { initAuth, logout as googleLogout, getStoredToken, getStoredEmail } from './services/firebaseAuth.ts';
 import { triggerPurgeConfetti } from './utils/confetti.ts';
 
 import { Header } from './components/Header.tsx';
@@ -62,11 +62,11 @@ const DEFAULT_PROVIDER_STATE: ProviderState = {
 
 const getInitialProvider = (): ProviderType => {
   try {
-    const saved = sessionStorage.getItem('ec_active_provider');
+    const saved = sessionStorage.getItem('ec_active_provider') || localStorage.getItem('ec_active_provider');
     if (saved && (saved === 'google' || saved === 'microsoft' || saved === 'yahoo' || saved === 'demo')) {
       return saved as ProviderType;
     }
-    const token = sessionStorage.getItem('ec_google_access_token');
+    const token = getStoredToken();
     if (token) return 'google';
   } catch {
     // ignore
@@ -75,12 +75,29 @@ const getInitialProvider = (): ProviderType => {
 };
 
 export default function App() {
+  const initialGoogleToken = getStoredToken();
+  const initialGoogleEmail = getStoredEmail();
+
   const [currentProvider, setCurrentProvider] = useState<ProviderType>(getInitialProvider);
   const [accounts, setAccounts] = useState<Record<ProviderType, EmailAccount>>({
-    google: { id: 'google', provider: 'google', email: 'Not Connected', isConnected: false },
+    google: {
+      id: 'google',
+      provider: 'google',
+      email: initialGoogleEmail || (initialGoogleToken ? 'Google Account' : 'Not Connected'),
+      isConnected: !!initialGoogleToken,
+      accessToken: initialGoogleToken || undefined,
+    },
     microsoft: { id: 'microsoft', provider: 'microsoft', email: 'Not Connected', isConnected: false },
     yahoo: { id: 'yahoo', provider: 'yahoo', email: 'Not Connected', isConnected: false },
     demo: { id: 'demo', provider: 'demo', email: 'alex.demo.user@example.com', name: 'Demo Inbox (2,500 Emails)', isConnected: true },
+  });
+
+  // Track if a provider has already executed an automatic scan in this session to prevent looping
+  const hasAutoScannedRef = useRef<Record<ProviderType, boolean>>({
+    google: false,
+    microsoft: false,
+    yahoo: false,
+    demo: false,
   });
 
   // Independent state per provider
@@ -180,7 +197,11 @@ export default function App() {
       const targetToken = tokenOverride || targetAccount?.accessToken;
 
       if (!targetAccount.isConnected && !tokenOverride && targetProvider !== 'demo') {
-        setIsConnectModalOpen(true);
+        showToast('Account Required', `Please connect your ${targetProvider.toUpperCase()} account to scan.`, 'info');
+        return null;
+      }
+
+      if (isScanningRef.current) {
         return null;
       }
 
@@ -263,7 +284,7 @@ export default function App() {
 
   // Initialize Firebase Auth Listener for Google
   useEffect(() => {
-    initAuth(
+    const unsubscribe = initAuth(
       (user, token) => {
         const updatedGoogle: EmailAccount = {
           id: 'google',
@@ -282,6 +303,7 @@ export default function App() {
 
         try {
           sessionStorage.setItem('ec_active_provider', 'google');
+          localStorage.setItem('ec_active_provider', 'google');
         } catch {}
 
         setCurrentProvider('google');
@@ -289,24 +311,37 @@ export default function App() {
 
         showToast('Google Connected', `Signed in as ${user.email || 'Google User'}.`, 'success');
 
-        // Automatically scan Google messages if not scanned yet in this session
-        if (statesRef.current.google.totalScanned === 0 && !isScanningRef.current) {
+        // Automatically scan Google messages ONLY ONCE per session
+        if (!hasAutoScannedRef.current.google && statesRef.current.google.totalScanned === 0) {
+          hasAutoScannedRef.current.google = true;
           scanBatch(null, queryFilterRef.current, 'google', token);
         }
       },
       () => {
-        setAccounts((prev) => ({
-          ...prev,
-          google: {
+        // Only mark disconnected if there is genuinely no stored token
+        const existingToken = getStoredToken();
+        if (!existingToken) {
+          const disconnected: EmailAccount = {
             id: 'google',
             provider: 'google',
             email: 'Not Connected',
             isConnected: false,
             accessToken: undefined,
-          },
-        }));
+          };
+          setAccounts((prev) => ({
+            ...prev,
+            google: disconnected,
+          }));
+          accountsRef.current.google = disconnected;
+        }
       }
     );
+
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
   }, [scanBatch, showToast]);
 
   // Auto scan continuously in 500-batch increments until done or cancelled
@@ -525,6 +560,7 @@ export default function App() {
   const handleConnectGoogle = (token: string, user: { email: string; name?: string }) => {
     try {
       sessionStorage.setItem('ec_active_provider', 'google');
+      localStorage.setItem('ec_active_provider', 'google');
     } catch {
       // ignore
     }
@@ -549,12 +585,14 @@ export default function App() {
     setSelectedDomainNames(new Set());
 
     showToast('Google Connected', `Signed in as ${user.email}. Scanning your real inbox...`, 'success');
+    hasAutoScannedRef.current.google = true;
     scanBatch(null, queryFilterRef.current, 'google', token);
   };
 
   const handleConnectMicrosoft = (token: string, email: string) => {
     try {
       sessionStorage.setItem('ec_active_provider', 'microsoft');
+      localStorage.setItem('ec_active_provider', 'microsoft');
     } catch {
       // ignore
     }
@@ -584,6 +622,7 @@ export default function App() {
   const handleConnectYahoo = (creds: { user: string; pass: string; host?: string; port?: number }) => {
     try {
       sessionStorage.setItem('ec_active_provider', 'yahoo');
+      localStorage.setItem('ec_active_provider', 'yahoo');
     } catch {
       // ignore
     }
@@ -613,6 +652,7 @@ export default function App() {
   const handleDisconnectProvider = async (provider: ProviderType) => {
     if (provider === 'google') {
       await googleLogout();
+      hasAutoScannedRef.current.google = false;
     }
     const disconnectedAccount: EmailAccount = {
       id: provider,
@@ -632,6 +672,7 @@ export default function App() {
     if (currentProvider === provider) {
       try {
         sessionStorage.setItem('ec_active_provider', 'demo');
+        localStorage.setItem('ec_active_provider', 'demo');
       } catch {
         // ignore
       }

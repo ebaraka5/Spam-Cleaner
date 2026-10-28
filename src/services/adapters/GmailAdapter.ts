@@ -34,13 +34,30 @@ export class GmailAdapter implements EmailProviderAdapter {
       listUrl.searchParams.set('pageToken', cursor);
     }
 
-    const listRes = await fetchWithRetry(listUrl.toString(), {
+    let listRes = await fetchWithRetry(listUrl.toString(), {
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
       },
     });
 
     if (!listRes || !listRes.ok) {
+      // Try backend proxy /api/gmail/scan as fallback
+      try {
+        const proxyRes = await fetch('/api/gmail/scan', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ cursor, queryFilter }),
+        });
+        if (proxyRes.ok) {
+          return await proxyRes.json();
+        }
+      } catch {
+        // continue to error handler
+      }
+
       const status = listRes ? listRes.status : 'Network error';
       if (listRes?.status === 401) {
         throw new Error('Google token expired or revoked. Please disconnect and reconnect your Google account.');

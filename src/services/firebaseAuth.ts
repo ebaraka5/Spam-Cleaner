@@ -19,20 +19,23 @@ provider.addScope('https://www.googleapis.com/auth/gmail.modify');
 provider.setCustomParameters({ prompt: 'select_account' });
 
 const TOKEN_KEY = 'ec_google_access_token';
+const EMAIL_KEY = 'ec_google_user_email';
 
-const getStoredToken = (): string | null => {
+export const getStoredToken = (): string | null => {
   try {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
 };
 
-const setStoredToken = (token: string | null) => {
+export const setStoredToken = (token: string | null) => {
   try {
     if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
       sessionStorage.setItem(TOKEN_KEY, token);
     } else {
+      localStorage.removeItem(TOKEN_KEY);
       sessionStorage.removeItem(TOKEN_KEY);
     }
   } catch {
@@ -40,13 +43,38 @@ const setStoredToken = (token: string | null) => {
   }
 };
 
+export const getStoredEmail = (): string | null => {
+  try {
+    return localStorage.getItem(EMAIL_KEY) || sessionStorage.getItem(EMAIL_KEY);
+  } catch {
+    return null;
+  }
+};
+
+export const setStoredEmail = (email: string | null) => {
+  try {
+    if (email) {
+      localStorage.setItem(EMAIL_KEY, email);
+      sessionStorage.setItem(EMAIL_KEY, email);
+    } else {
+      localStorage.removeItem(EMAIL_KEY);
+      sessionStorage.removeItem(EMAIL_KEY);
+    }
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+};
+
 let isSigningIn = false;
+let isCheckingRedirect = true;
 let cachedAccessToken: string | null = getStoredToken();
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  isCheckingRedirect = true;
+
   // Check if returning from a signInWithRedirect flow
   getRedirectResult(auth)
     .then((result) => {
@@ -55,28 +83,44 @@ export const initAuth = (
         if (credential?.accessToken) {
           cachedAccessToken = credential.accessToken;
           setStoredToken(credential.accessToken);
+          if (result.user.email) setStoredEmail(result.user.email);
           if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
         }
       }
     })
     .catch((err) => {
       console.warn('Redirect result check notice:', err);
+    })
+    .finally(() => {
+      isCheckingRedirect = false;
+      const currentUser = auth.currentUser;
+      const token = cachedAccessToken || getStoredToken();
+      if (currentUser && token) {
+        if (onAuthSuccess) onAuthSuccess(currentUser, token);
+      } else if (!currentUser && !token) {
+        if (onAuthFailure) onAuthFailure();
+      }
     });
 
   return onAuthStateChanged(auth, async (user: User | null) => {
+    if (isCheckingRedirect) {
+      // Do not prematurely process auth state while getRedirectResult is in-flight
+      return;
+    }
+
     if (user) {
       const token = cachedAccessToken || getStoredToken();
       if (token) {
         cachedAccessToken = token;
         if (onAuthSuccess) onAuthSuccess(user, token);
       } else if (!isSigningIn) {
-        cachedAccessToken = null;
-        setStoredToken(null);
+        // User exists in Firebase but no OAuth token is available yet
         if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
       setStoredToken(null);
+      setStoredEmail(null);
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -93,6 +137,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 
     cachedAccessToken = credential.accessToken;
     setStoredToken(cachedAccessToken);
+    if (result.user.email) setStoredEmail(result.user.email);
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error) {
     console.error('Google Sign In error:', error);
@@ -115,4 +160,5 @@ export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;
   setStoredToken(null);
+  setStoredEmail(null);
 };
