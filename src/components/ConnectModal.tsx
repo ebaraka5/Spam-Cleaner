@@ -1,7 +1,20 @@
 import React, { useState } from 'react';
-import { X, ShieldCheck, Mail, Key, ExternalLink, AlertCircle, CheckCircle2, Copy, Check } from 'lucide-react';
+import {
+  X,
+  ShieldCheck,
+  Mail,
+  Key,
+  ExternalLink,
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  Check,
+  Compass,
+  ArrowRight,
+  ShieldAlert
+} from 'lucide-react';
 import type { ProviderType } from '../types/provider.ts';
-import { googleSignIn } from '../services/firebaseAuth.ts';
+import { googleSignIn, googleSignInRedirect } from '../services/firebaseAuth.ts';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 interface ConnectModalProps {
@@ -22,6 +35,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   onConnectYahoo,
 }) => {
   const [loading, setLoading] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedDomain, setCopiedDomain] = useState(false);
 
@@ -61,15 +75,29 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
         onClose();
       }
     } catch (err: unknown) {
-      const error = err as { code?: string; message?: string };
-      console.error('Google Sign-in failed:', error);
-      if (error.code === 'auth/unauthorized-domain' || (error.message && error.message.includes('unauthorized-domain'))) {
+      const errorObj = err as { code?: string; message?: string };
+      console.error('Google Sign-in failed:', errorObj);
+      if (errorObj.code === 'auth/unauthorized-domain' || (errorObj.message && errorObj.message.includes('unauthorized-domain'))) {
         setError(`auth/unauthorized-domain: This hosting domain (${currentHostname || 'your Netlify domain'}) has not been authorized in Firebase Authentication.`);
+      } else if (errorObj.code === 'auth/popup-closed-by-user' || (errorObj.message && errorObj.message.includes('popup-closed-by-user'))) {
+        setError(`auth/popup-closed-by-user: The sign-in popup was automatically closed or blocked by your browser before authentication finished.`);
       } else {
-        setError(error.message || 'Failed to authenticate with Google.');
+        setError(errorObj.message || 'Failed to authenticate with Google.');
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleRedirectConnect = async () => {
+    setRedirecting(true);
+    setError(null);
+    try {
+      await googleSignInRedirect();
+    } catch (err: unknown) {
+      const errorObj = err as { message?: string };
+      setError(errorObj.message || 'Failed to initiate redirect sign-in.');
+      setRedirecting(false);
     }
   };
 
@@ -99,6 +127,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
   };
 
   const isUnauthorizedDomain = error && error.includes('unauthorized-domain');
+  const isPopupClosedByUser = error && error.includes('popup-closed-by-user');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
@@ -134,8 +163,37 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
             <div className="mb-4 space-y-3">
               <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span className="break-words">{error}</span>
+                <span className="break-words font-medium">{error}</span>
               </div>
+
+              {/* Special Guided Resolution for popup-closed-by-user */}
+              {isPopupClosedByUser && (
+                <div className="p-4 rounded-xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-900/60 text-xs text-sky-950 dark:text-sky-200 space-y-3">
+                  <div className="flex items-center gap-2 font-semibold text-sky-950 dark:text-sky-100">
+                    <ShieldAlert className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+                    <span>Why did this happen even if you didn't close it?</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-sky-900 dark:text-sky-300">
+                    Modern browsers (Chrome third-party cookie partitioning, Safari ITP, Brave Shields, or popup blockers) block cross-domain authentication popups and terminate the connection before Google can pass the token back.
+                  </p>
+
+                  <div className="pt-1">
+                    <button
+                      type="button"
+                      onClick={handleGoogleRedirectConnect}
+                      disabled={redirecting}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs shadow-sm transition cursor-pointer"
+                    >
+                      <Compass className="w-4 h-4" />
+                      <span>{redirecting ? 'Redirecting to Google...' : 'Sign In using Full-Page Redirect (Guaranteed)'}</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    <p className="text-[10px] text-center text-sky-700 dark:text-sky-400 mt-1.5">
+                      Redirect mode bypasses all popup blockers and cross-origin restrictions.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Special Guided Resolution for auth/unauthorized-domain */}
               {isUnauthorizedDomain && (
@@ -158,7 +216,7 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                       <button
                         type="button"
                         onClick={handleCopyHostname}
-                        className="px-3 py-1.5 rounded-lg bg-amber-200 hover:bg-amber-300 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-950 dark:text-amber-100 text-xs font-medium flex items-center gap-1 transition"
+                        className="px-3 py-1.5 rounded-lg bg-amber-200 hover:bg-amber-300 dark:bg-amber-800 dark:hover:bg-amber-700 text-amber-950 dark:text-amber-100 text-xs font-medium flex items-center gap-1 transition cursor-pointer"
                       >
                         {copiedDomain ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedDomain ? 'Copied!' : 'Copy'}</span>
@@ -205,11 +263,12 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                 </p>
               </div>
 
-              <div className="pt-2 flex flex-col items-center">
+              <div className="pt-2 space-y-2.5">
+                {/* Method 1: Standard Popup */}
                 <button
                   type="button"
                   onClick={handleGoogleConnect}
-                  disabled={loading}
+                  disabled={loading || redirecting}
                   className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-slate-300 dark:border-slate-700 rounded-xl shadow-xs bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 transition text-sm font-medium text-slate-700 dark:text-slate-200 disabled:opacity-60 cursor-pointer"
                 >
                   <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48">
@@ -218,7 +277,22 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
                     <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
                     <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
                   </svg>
-                  <span>{loading ? 'Opening Google Sign-in...' : 'Sign in with Google'}</span>
+                  <span>{loading ? 'Opening Google Sign-in...' : 'Sign in with Google (Popup)'}</span>
+                </button>
+
+                {/* Method 2: Redirect Fallback */}
+                <div className="text-center">
+                  <span className="text-[11px] text-slate-400">or if popups are blocked on your browser:</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleRedirectConnect}
+                  disabled={loading || redirecting}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 text-xs font-semibold transition cursor-pointer disabled:opacity-60"
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>{redirecting ? 'Redirecting to Google...' : 'Sign in with Full-Page Redirect'}</span>
                 </button>
               </div>
             </div>

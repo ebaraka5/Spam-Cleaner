@@ -108,6 +108,8 @@ export default function App() {
             accessToken: token,
           },
         }));
+        setCurrentProvider('google');
+        showToast('Google Connected', `Signed in as ${user.email || 'Google User'}. Ready to scan.`, 'success');
       },
       () => {
         setAccounts((prev) => ({
