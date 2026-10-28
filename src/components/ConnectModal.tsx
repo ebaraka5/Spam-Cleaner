@@ -100,6 +100,10 @@ export const ConnectModal: React.FC<ConnectModalProps> = ({
     setRedirecting(true);
     setError(null);
     try {
+      try {
+        sessionStorage.setItem('ec_active_provider', 'google');
+        localStorage.setItem('ec_active_provider', 'google');
+      } catch {}
       await googleSignInRedirect();
     } catch (err: unknown) {
       const errorObj = err as { message?: string };

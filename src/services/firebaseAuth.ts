@@ -75,12 +75,15 @@ export const initAuth = (
 ) => {
   isCheckingRedirect = true;
 
+  let hasHandledRedirect = false;
+
   // Check if returning from a signInWithRedirect flow
   getRedirectResult(auth)
     .then((result) => {
       if (result) {
         const credential = GoogleAuthProvider.credentialFromResult(result);
         if (credential?.accessToken) {
+          hasHandledRedirect = true;
           cachedAccessToken = credential.accessToken;
           setStoredToken(credential.accessToken);
           if (result.user.email) setStoredEmail(result.user.email);
@@ -93,12 +96,14 @@ export const initAuth = (
     })
     .finally(() => {
       isCheckingRedirect = false;
-      const currentUser = auth.currentUser;
-      const token = cachedAccessToken || getStoredToken();
-      if (currentUser && token) {
-        if (onAuthSuccess) onAuthSuccess(currentUser, token);
-      } else if (!currentUser && !token) {
-        if (onAuthFailure) onAuthFailure();
+      if (!hasHandledRedirect) {
+        const currentUser = auth.currentUser;
+        const token = cachedAccessToken || getStoredToken();
+        if (currentUser && token) {
+          if (onAuthSuccess) onAuthSuccess(currentUser, token);
+        } else if (!currentUser && !token) {
+          if (onAuthFailure) onAuthFailure();
+        }
       }
     });
 
@@ -114,13 +119,13 @@ export const initAuth = (
         cachedAccessToken = token;
         if (onAuthSuccess) onAuthSuccess(user, token);
       } else if (!isSigningIn) {
-        // User exists in Firebase but no OAuth token is available yet
+        // User exists in Firebase but no OAuth token is available yet in local storage
         if (onAuthFailure) onAuthFailure();
       }
     } else {
-      cachedAccessToken = null;
-      setStoredToken(null);
-      setStoredEmail(null);
+      // Do not wipe cachedAccessToken or stored tokens here.
+      // onAuthStateChanged fires with null on initial boot before IndexedDB resolves.
+      // Only explicit logout() should clear stored credentials.
       if (onAuthFailure) onAuthFailure();
     }
   });

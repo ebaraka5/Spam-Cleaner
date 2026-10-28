@@ -194,11 +194,37 @@ export default function App() {
     ): Promise<BatchScanResult | null> => {
       const targetProvider = providerOverride || currentProviderRef.current;
       const targetAccount = accountsRef.current[targetProvider];
-      const targetToken = tokenOverride || targetAccount?.accessToken;
+      const storedGoogleToken = targetProvider === 'google' ? getStoredToken() : undefined;
+      const targetToken = tokenOverride || targetAccount?.accessToken || storedGoogleToken;
 
-      if (!targetAccount.isConnected && !tokenOverride && targetProvider !== 'demo') {
-        showToast('Account Required', `Please connect your ${targetProvider.toUpperCase()} account to scan.`, 'info');
+      const isAccountActuallyConnected =
+        targetProvider === 'demo'
+          ? true
+          : !!targetToken || targetAccount?.isConnected;
+
+      if (!isAccountActuallyConnected) {
+        showToast('Account Required', `Please connect or sign into your ${targetProvider.toUpperCase()} account to scan.`, 'info');
+        setIsConnectModalOpen(true);
         return null;
+      }
+
+      // Self-heal account state if we have a valid token
+      if (targetToken && (!targetAccount.isConnected || !targetAccount.accessToken)) {
+        targetAccount.isConnected = true;
+        targetAccount.accessToken = targetToken;
+        const storedEmail = targetProvider === 'google' ? getStoredEmail() : undefined;
+        if (storedEmail && (!targetAccount.email || targetAccount.email === 'Not Connected')) {
+          targetAccount.email = storedEmail;
+        }
+        setAccounts((prev) => ({
+          ...prev,
+          [targetProvider]: {
+            ...prev[targetProvider],
+            isConnected: true,
+            accessToken: targetToken,
+            email: storedEmail || prev[targetProvider].email,
+          },
+        }));
       }
 
       if (isScanningRef.current) {
@@ -208,7 +234,7 @@ export default function App() {
       setIsScanning(true);
       isScanningRef.current = true;
       try {
-        const adapter = getAdapterFor(targetProvider, targetToken);
+        const adapter = getAdapterFor(targetProvider, targetToken || undefined);
         const currentState = statesRef.current[targetProvider];
         const cursorToUse = cursorOverride !== undefined ? cursorOverride : currentState.cursor;
         const filterToUse = filterOverride !== undefined ? filterOverride : queryFilterRef.current;
@@ -270,7 +296,11 @@ export default function App() {
         return result;
       } catch (err: unknown) {
         const error = err as { message?: string };
-        showToast('Scan Failed', error.message || 'Could not fetch batch', 'error');
+        const msg = error.message || 'Could not fetch batch';
+        showToast('Scan Failed', msg, 'error');
+        if (msg.includes('expired') || msg.includes('401') || msg.includes('revoked')) {
+          setIsConnectModalOpen(true);
+        }
         autoScanRef.current = false;
         setIsAutoScanning(false);
         return null;
@@ -361,8 +391,9 @@ export default function App() {
     setIsAutoScanning(true);
 
     let nextCur: string | null = statesRef.current[currentProvider].cursor;
+    const currentToken = currentProvider === 'google' ? (accountsRef.current.google.accessToken || getStoredToken()) : accountsRef.current[currentProvider].accessToken;
     while (autoScanRef.current) {
-      const res = await scanBatch(nextCur, queryFilterRef.current, currentProvider);
+      const res = await scanBatch(nextCur, queryFilterRef.current, currentProvider, currentToken || undefined);
       if (!res || !res.nextCursor || res.totalScanned === 0) {
         break;
       }
@@ -553,7 +584,8 @@ export default function App() {
       [currentProvider]: [],
     }));
     showToast('Scope Updated', `Switched scan scope to "${newFilter}". Scanning...`, 'info');
-    scanBatch(null, newFilter, currentProvider);
+    const currentToken = currentProvider === 'google' ? (accountsRef.current.google.accessToken || getStoredToken()) : accountsRef.current[currentProvider].accessToken;
+    scanBatch(null, newFilter, currentProvider, currentToken || undefined);
   };
 
   // Connect callbacks
@@ -784,7 +816,10 @@ export default function App() {
           batchNumber={activeState.batchNumber}
           isScanning={isScanning}
           isAutoScanning={isAutoScanning}
-          onScanNextBatch={() => scanBatch(undefined, undefined, currentProvider)}
+          onScanNextBatch={() => {
+            const currentToken = currentProvider === 'google' ? (accountsRef.current.google.accessToken || getStoredToken()) : accountsRef.current[currentProvider].accessToken;
+            scanBatch(undefined, undefined, currentProvider, currentToken || undefined);
+          }}
           onToggleAutoScan={handleToggleAutoScan}
           onResetScan={handleResetScan}
           hasMoreBatches={activeState.hasMore}
