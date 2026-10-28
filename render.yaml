@@ -1,10 +1,13 @@
 services:
   - type: web
     name: email-cleaner
-    runtime: node
+    env: node
     plan: free
-    buildCommand: npm install && npm run build
+    region: oregon
+    buildCommand: npm install --legacy-peer-deps && npm run build
     startCommand: npm start
     envVars:
+      - key: NODE_VERSION
+        value: 22.14.0
       - key: NODE_ENV
         value: production
