@@ -476,9 +476,11 @@ app.post('/api/gmail/scan', async (req: Request, res: Response) => {
 
     res.json(result);
   } catch (err: unknown) {
-    const error = err as { message?: string };
+    const error = err as { code?: number; message?: string; status?: number };
     console.error('Gmail scan error:', error.message);
-    res.status(500).json({ error: error.message || 'Failed to scan Gmail inbox' });
+    const code = error.code || error.status;
+    const statusCode = code === 401 || code === 403 ? code : 500;
+    res.status(statusCode).json({ error: error.message || 'Failed to scan Gmail inbox' });
   }
 });
 

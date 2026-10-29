@@ -191,11 +191,13 @@ export const ScanProgressHeader: React.FC<ScanProgressHeaderProps> = ({
             </div>
             <h2 className="text-base sm:text-lg font-bold">
               {totalScanned === 0
-                ? 'Ready to analyze your inbox'
+                ? (batchNumber > 0 ? 'No emails found in this scope' : 'Ready to analyze your inbox')
                 : `Scanned ${totalScanned.toLocaleString()} emails (${totalDomainsCount} sender domains aggregated)`}
             </h2>
             <p className="text-xs text-slate-300">
-              {hasMoreBatches
+              {totalScanned === 0 && batchNumber > 0
+                ? 'Your selected inbox folder or search tab has 0 messages.'
+                : hasMoreBatches
                 ? 'Click "Scan Next 500 Emails" or enable Auto-Scan to fetch additional messages.'
                 : 'All available inbox messages in this folder scope have been analyzed.'}
             </p>

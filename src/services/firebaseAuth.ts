@@ -16,7 +16,7 @@ export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/gmail.modify');
-provider.setCustomParameters({ prompt: 'select_account' });
+provider.setCustomParameters({ prompt: 'consent select_account', access_type: 'offline' });
 
 const TOKEN_KEY = 'ec_google_access_token';
 const EMAIL_KEY = 'ec_google_user_email';

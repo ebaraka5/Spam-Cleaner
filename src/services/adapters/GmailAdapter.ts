@@ -27,6 +27,41 @@ export class GmailAdapter implements EmailProviderAdapter {
   }
 
   async scanBatch(cursor?: string, queryFilter: string = 'in:inbox'): Promise<BatchScanResult> {
+    // 1. First try backend proxy (avoids browser CORS issues and uses googleapis)
+    try {
+      const proxyRes = await fetch('/api/gmail/scan', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cursor, queryFilter }),
+      });
+
+      if (proxyRes.ok) {
+        return await proxyRes.json();
+      }
+
+      // If server returned a structured error response
+      const errData = await proxyRes.json().catch(() => ({}));
+      const errMsg = errData.error || errData.message;
+      if (proxyRes.status === 401 || (errMsg && (errMsg.includes('invalid authentication credentials') || errMsg.includes('invalid_grant')))) {
+        throw new Error('Google token expired or revoked. Please disconnect and reconnect your Google account.');
+      }
+      if (proxyRes.status === 403 || (errMsg && (errMsg.includes('insufficient') || errMsg.includes('permission') || errMsg.includes('not enabled')))) {
+        throw new Error(errMsg || 'Gmail permission denied. Please ensure Gmail Modify scope is granted.');
+      }
+      if (errMsg) {
+        throw new Error(errMsg);
+      }
+    } catch (proxyErr: any) {
+      // If it's an auth or API error that was explicitly thrown above, re-throw it
+      if (proxyErr.message && !proxyErr.message.includes('Failed to fetch') && !proxyErr.message.includes('NetworkError')) {
+        throw proxyErr;
+      }
+    }
+
+    // 2. Direct browser fetch fallback
     const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
     listUrl.searchParams.set('maxResults', '500');
     listUrl.searchParams.set('q', queryFilter);
@@ -41,23 +76,6 @@ export class GmailAdapter implements EmailProviderAdapter {
     });
 
     if (!listRes || !listRes.ok) {
-      // Try backend proxy /api/gmail/scan as fallback
-      try {
-        const proxyRes = await fetch('/api/gmail/scan', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ cursor, queryFilter }),
-        });
-        if (proxyRes.ok) {
-          return await proxyRes.json();
-        }
-      } catch {
-        // continue to error handler
-      }
-
       const status = listRes ? listRes.status : 'Network error';
       if (listRes?.status === 401) {
         throw new Error('Google token expired or revoked. Please disconnect and reconnect your Google account.');
@@ -174,21 +192,34 @@ export class GmailAdapter implements EmailProviderAdapter {
       const chunk = messageIds.slice(i, i + CHUNK_SIZE);
 
       if (permanent) {
-        const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete', {
+        let res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/batchDelete', {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${this.accessToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ ids: chunk }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error?.message || `Failed to permanently delete messages (${res.status})`);
+        }).catch(() => null);
+
+        if (!res || !res.ok) {
+          // Fallback to backend proxy
+          const proxyRes = await fetch('/api/gmail/delete', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${this.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ messageIds: chunk, permanent: true }),
+          }).catch(() => null);
+
+          if (!proxyRes || !proxyRes.ok) {
+            const err = res ? await res.json().catch(() => ({})) : {};
+            throw new Error(err.error?.message || 'Failed to permanently delete messages');
+          }
         }
       } else {
         // Move to Trash
-        const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify', {
+        let res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify', {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${this.accessToken}`,
@@ -199,10 +230,23 @@ export class GmailAdapter implements EmailProviderAdapter {
             removeLabelIds: ['INBOX'],
             addLabelIds: ['TRASH'],
           }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error?.message || `Failed to move messages to trash (${res.status})`);
+        }).catch(() => null);
+
+        if (!res || !res.ok) {
+          // Fallback to backend proxy
+          const proxyRes = await fetch('/api/gmail/delete', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${this.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ messageIds: chunk, permanent: false }),
+          }).catch(() => null);
+
+          if (!proxyRes || !proxyRes.ok) {
+            const err = res ? await res.json().catch(() => ({})) : {};
+            throw new Error(err.error?.message || 'Failed to move messages to trash');
+          }
         }
       }
     }

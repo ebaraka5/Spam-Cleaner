@@ -28,7 +28,7 @@ import { GmailAdapter } from './services/adapters/GmailAdapter.ts';
 import { MicrosoftGraphAdapter } from './services/adapters/MicrosoftGraphAdapter.ts';
 import { YahooImapAdapter } from './services/adapters/YahooImapAdapter.ts';
 import { DemoAdapter } from './services/adapters/DemoAdapter.ts';
-import { initAuth, logout as googleLogout, getStoredToken, getStoredEmail } from './services/firebaseAuth.ts';
+import { initAuth, logout as googleLogout, getStoredToken, setStoredToken, getStoredEmail } from './services/firebaseAuth.ts';
 import { triggerPurgeConfetti } from './utils/confetti.ts';
 
 import { Header } from './components/Header.tsx';
@@ -162,7 +162,7 @@ export default function App() {
   const getAdapterFor = useCallback((provider: ProviderType, tokenOverride?: string): EmailProviderAdapter => {
     switch (provider) {
       case 'google': {
-        const token = tokenOverride || accountsRef.current.google.accessToken;
+        const token = tokenOverride || accountsRef.current.google.accessToken || getStoredToken();
         if (!token) throw new Error('Gmail account not connected. Please sign in first.');
         return new GmailAdapter(token);
       }
@@ -203,8 +203,7 @@ export default function App() {
           : !!targetToken || targetAccount?.isConnected;
 
       if (!isAccountActuallyConnected) {
-        showToast('Account Required', `Please connect or sign into your ${targetProvider.toUpperCase()} account to scan.`, 'info');
-        setIsConnectModalOpen(true);
+        showToast('Account Required', `Please connect your ${targetProvider.toUpperCase()} account to scan emails.`, 'info');
         return null;
       }
 
@@ -298,9 +297,33 @@ export default function App() {
         const error = err as { message?: string };
         const msg = error.message || 'Could not fetch batch';
         showToast('Scan Failed', msg, 'error');
-        if (msg.includes('expired') || msg.includes('401') || msg.includes('revoked')) {
-          setIsConnectModalOpen(true);
+
+        // If authorization expired or credentials revoked, mark account as needing connection
+        if (
+          msg.includes('expired') ||
+          msg.includes('401') ||
+          msg.includes('revoked') ||
+          msg.includes('invalid authentication credentials')
+        ) {
+          if (targetProvider === 'google') {
+            setStoredToken(null);
+          }
+          setAccounts((prev) => ({
+            ...prev,
+            [targetProvider]: {
+              ...prev[targetProvider],
+              isConnected: false,
+              accessToken: undefined,
+            },
+          }));
+          accountsRef.current[targetProvider] = {
+            ...accountsRef.current[targetProvider],
+            isConnected: false,
+            accessToken: undefined,
+          };
+          hasAutoScannedRef.current[targetProvider] = false;
         }
+
         autoScanRef.current = false;
         setIsAutoScanning(false);
         return null;
@@ -433,57 +456,63 @@ export default function App() {
   const executePurge = async (permanent: boolean) => {
     if (domainsToPurge.length === 0) return;
 
-    const adapter = getAdapterFor(currentProvider);
-    const allMessageIds = domainsToPurge.flatMap((d) => d.group.messageIds);
-    const domainNames = new Set(domainsToPurge.map((d) => d.domain));
+    try {
+      const adapter = getAdapterFor(currentProvider);
+      const allMessageIds = domainsToPurge.flatMap((d) => d.group.messageIds);
+      const domainNames = new Set(domainsToPurge.map((d) => d.domain));
 
-    const result = await adapter.deleteBatch(allMessageIds, permanent);
+      const result = await adapter.deleteBatch(allMessageIds, permanent);
 
-    if (result.success) {
-      // Calculate reclaimed size
-      const reclaimedKb = domainsToPurge.reduce((acc, d) => acc + (d.group.estimatedSizeKb || 25), 0);
-      const reclaimedMb = reclaimedKb / 1024;
+      if (result.success) {
+        // Calculate reclaimed size
+        const reclaimedKb = domainsToPurge.reduce((acc, d) => acc + (d.group.estimatedSizeKb || 25), 0);
+        const reclaimedMb = reclaimedKb / 1024;
 
-      setStates((prev) => {
-        const current = prev[currentProvider];
-        const nextDomains = { ...current.domains };
-        for (const name of domainNames) {
-          delete nextDomains[name];
-        }
+        setStates((prev) => {
+          const current = prev[currentProvider];
+          const nextDomains = { ...current.domains };
+          for (const name of domainNames) {
+            delete nextDomains[name];
+          }
 
-        const nextState: ProviderState = {
-          ...current,
-          domains: nextDomains,
-          totalCleaned: current.totalCleaned + result.count,
-          reclaimedStorageMb: current.reclaimedStorageMb + reclaimedMb,
-        };
+          const nextState: ProviderState = {
+            ...current,
+            domains: nextDomains,
+            totalCleaned: current.totalCleaned + result.count,
+            reclaimedStorageMb: current.reclaimedStorageMb + reclaimedMb,
+          };
 
-        statesRef.current = {
-          ...statesRef.current,
-          [currentProvider]: nextState,
-        };
+          statesRef.current = {
+            ...statesRef.current,
+            [currentProvider]: nextState,
+          };
 
-        return {
-          ...prev,
-          [currentProvider]: nextState,
-        };
-      });
+          return {
+            ...prev,
+            [currentProvider]: nextState,
+          };
+        });
 
-      // Clear selection
-      setSelectedDomainNames((prev) => {
-        const next = new Set(prev);
-        for (const name of domainNames) {
-          next.delete(name);
-        }
-        return next;
-      });
+        // Clear selection
+        setSelectedDomainNames((prev) => {
+          const next = new Set(prev);
+          for (const name of domainNames) {
+            next.delete(name);
+          }
+          return next;
+        });
 
-      triggerPurgeConfetti();
-      showToast(
-        `Purged ${result.count.toLocaleString()} Emails!`,
-        `Successfully cleaned ${domainsToPurge.length} domain(s). Freed ~${reclaimedMb.toFixed(1)} MB storage.`,
-        'success'
-      );
+        triggerPurgeConfetti();
+        showToast(
+          `Purged ${result.count.toLocaleString()} Emails!`,
+          `Successfully cleaned ${domainsToPurge.length} domain(s). Freed ~${reclaimedMb.toFixed(1)} MB storage.`,
+          'success'
+        );
+      }
+    } catch (err: unknown) {
+      const error = err as { message?: string };
+      showToast('Purge Failed', error.message || 'Could not delete emails', 'error');
+      throw err;
     }
   };
 
@@ -765,8 +794,9 @@ export default function App() {
           setSelectedDomainNames(new Set());
 
           // Automatically scan if switching to connected Google or Demo with 0 scanned emails
-          if (p === 'google' && accountsRef.current.google.isConnected && statesRef.current.google.totalScanned === 0 && !isScanningRef.current) {
-            scanBatch(null, queryFilterRef.current, 'google', accountsRef.current.google.accessToken);
+          const googleToken = accountsRef.current.google.accessToken || getStoredToken();
+          if (p === 'google' && googleToken && statesRef.current.google.totalScanned === 0 && !isScanningRef.current) {
+            scanBatch(null, queryFilterRef.current, 'google', googleToken);
           } else if (p === 'demo' && statesRef.current.demo.totalScanned === 0 && !isScanningRef.current) {
             scanBatch(null, queryFilterRef.current, 'demo');
           }

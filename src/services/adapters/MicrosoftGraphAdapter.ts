@@ -51,15 +51,32 @@ export class MicrosoftGraphAdapter implements EmailProviderAdapter {
       ? cursor
       : 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=500&$select=id,from,subject,receivedDateTime';
 
-    const res = await fetch(url, {
+    let res = await fetch(url, {
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
       },
-    });
+    }).catch(() => null);
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Microsoft Graph returned HTTP ${res.status}`);
+    if (!res || !res.ok) {
+      // Fallback to server proxy
+      try {
+        const proxyRes = await fetch('/api/graph/scan', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ cursor }),
+        });
+        if (proxyRes.ok) {
+          return await proxyRes.json();
+        }
+      } catch {
+        // continue
+      }
+
+      const err = res ? await res.json().catch(() => ({})) : {};
+      throw new Error(err.error?.message || `Microsoft Graph request failed (${res ? res.status : 'Network error'})`);
     }
 
     const data = await res.json();
@@ -121,17 +138,34 @@ export class MicrosoftGraphAdapter implements EmailProviderAdapter {
         body: { destinationId: 'deleteditems' },
       }));
 
-      const res = await fetch('https://graph.microsoft.com/v1.0/$batch', {
+      let res = await fetch('https://graph.microsoft.com/v1.0/$batch', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.accessToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ requests: batchRequests }),
-      });
+      }).catch(() => null);
 
-      if (!res.ok) {
-        throw new Error(`Microsoft batch move failed (${res.status})`);
+      if (!res || !res.ok) {
+        // Fallback to server proxy
+        try {
+          const proxyRes = await fetch('/api/graph/delete', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${this.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ messageIds: slice }),
+          });
+          if (proxyRes.ok) {
+            continue;
+          }
+        } catch {
+          // continue
+        }
+
+        throw new Error(`Microsoft batch move failed (${res ? res.status : 'Network error'})`);
       }
     }
 
